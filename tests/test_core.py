@@ -98,3 +98,11 @@ def test_static_and_dynamic_models_recover_inertia():
     fc = dynamics.forecast(m)
     c = dynamics.compare(fc)
     assert c["rmse_dynamic"] <= c["rmse_static"] * 1.05
+
+
+def test_psi_is_zero_for_the_same_distribution_and_grows_with_a_shift():
+    from mdp import drift
+    rng = np.random.default_rng(5)
+    a = rng.normal(0, 1, 50_000)
+    assert drift.psi(a, rng.normal(0, 1, 50_000)) < 0.01
+    assert drift.psi(a, rng.normal(0.5, 1, 50_000)) > 0.1

@@ -31,6 +31,15 @@ Case study page, with an interactive simulator:
 
 The page discusses each result and its limits.
 
+## Version 2
+
+- `paper/paper.pdf`: working paper (rendered from `paper/paper.qmd`, numbers read from `results/`).
+- `mdp/api.py` and `Dockerfile`: pricing API (`GET /health`, `POST /quote`, `POST /multiplier`).
+- `MODEL_CARD.md`: what the model does, evidence for each part, limits, monitoring and retraining.
+- `mdp/drift.py`: monthly population stability index of trip features (`results/drift.csv`); every
+  month through June 2025 is below 0.05.
+- `mdp/geo.py`: simplified taxi-zone outlines for the zone map on the page.
+
 ## Run it
 
 Python 3.11 or later.
@@ -41,7 +50,9 @@ pytest -v
 python -m mdp.cli download     # monthly files into MDP_RAW (about 7 GB)
 python -m mdp.cli aggregate    # aggregates into MDP_DERIVED
 python -m mdp.cli analyse      # tables in results/
+python -m mdp.cli drift
 python -m mdp.cli export site/data.json
+docker build -t mdp-api . && docker run -p 8000:8000 mdp-api
 ```
 
 `MDP_RAW` and `MDP_DERIVED` set where the raw files and the aggregates go; both stay out of the

@@ -14,7 +14,7 @@ import urllib.request
 import numpy as np
 import pandas as pd
 
-from . import aggregate, dynamics, experiment, fare, forecast, simulate, zones
+from . import aggregate, drift, dynamics, experiment, fare, forecast, simulate, zones
 from .config import BASE_URL, DATA, DERIVED, MONTHS, RAW, RESULTS, ZONES_URL
 
 AREAS = zones.AREAS
@@ -141,12 +141,19 @@ def cmd_export(path: str) -> None:
     z["weekend"] = (z["dow"] >= 5).astype(int)
     z["area"] = z["zone"].map(area)
     days = z.groupby("weekend")["date"].nunique()
+    zp = z.groupby(["zone", "weekend", "hour"])[["trips", "fare_sum", "miles_sum", "wait_sum", "wait_n"]].sum().reset_index()
+    zp["trips"] = zp["trips"] / zp["weekend"].map(days)
+    zp["fare_per_mile"] = zp["fare_sum"] / zp["miles_sum"]
+    zp["wait"] = zp["wait_sum"] / zp["wait_n"] / 60
+    zp = zp[["zone", "weekend", "hour", "trips", "fare_per_mile", "wait"]].round(3)
+    zp.to_csv(RESULTS / "zone_profile.csv", index=False)
     prof = z.groupby(["area", "weekend", "hour", "platform"])[["trips", "fare_sum", "pay_sum", "wait_sum", "wait_n"]].sum()
     prof = prof.reset_index()
     prof["trips"] = prof["trips"] / prof["weekend"].map(days)
     prof["fare"] = prof["fare_sum"] / (prof["trips"] * prof["weekend"].map(days))
     prof["theta"] = prof["pay_sum"] / prof["fare_sum"]
     prof["wait"] = prof["wait_sum"] / prof["wait_n"] / 60
+    prof[["area", "weekend", "hour", "platform", "trips", "fare", "theta", "wait"]].round(4).to_csv(RESULTS / "profiles.csv", index=False)
     pi = pd.read_csv(RESULTS / "price_index.csv")
     ev = pd.read_csv(RESULTS / "event_series.csv")
     out = {
@@ -166,6 +173,10 @@ def cmd_export(path: str) -> None:
         "policies": pd.read_csv(RESULTS / "policies.csv").round(5).to_dict("records"),
         "phase": pd.read_csv(RESULTS / "phase.csv").round(5).to_dict("records"),
         "quality": pd.read_csv(RESULTS / "data_quality.csv").round(6).to_dict("records"),
+        # JSON has no NaN: zone-hours without waits or miles become null
+        "zones": {c: [None if pd.isna(v) else v for v in zp[c].tolist()]
+                  for c in ("zone", "weekend", "hour", "trips", "fare_per_mile", "wait")},
+        "crz": r["crz_zones"],
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, separators=(",", ":"), default=float)
@@ -181,6 +192,10 @@ def main(argv=None) -> None:
         aggregate.run(MONTHS)
     elif cmd == "analyse":
         print(json.dumps(cmd_analyse(), indent=2, default=float))
+    elif cmd == "drift":
+        d = drift.monthly(pd.read_parquet(DERIVED / "trip_sample.parquet"))
+        d.to_csv(RESULTS / "drift.csv", index=False)
+        print(d.pivot(index="month", columns="feature", values="psi").round(3))
     elif cmd == "export":
         cmd_export(argv[1])
     else:

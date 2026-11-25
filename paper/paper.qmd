@@ -1,0 +1,161 @@
+---
+title: "Riders, drivers and the price: evolutionary dynamics in ride-hailing pricing"
+subtitle: "Evidence from 301 million New York trips and a natural price shock"
+author:
+  - name: Rodrigo Hermont Ozon
+    affiliation: OQuant
+date: last-modified
+keywords: [dynamic pricing, ride-hailing, evolutionary game theory, choice models, switchback experiments]
+---
+
+```{python}
+import json
+from pathlib import Path
+import numpy as np
+import pandas as pd
+R = Path.cwd().parent / "results"
+S = json.loads((R / "summary.json").read_text())
+cm = pd.read_csv(R / "choice_models.csv")
+did = pd.read_csv(R / "did_credit.csv")
+fb = pd.read_csv(R / "forecast_backtest.csv")
+pol = pd.read_csv(R / "policies.csv")
+ph = pd.read_csv(R / "phase.csv")
+sw = pd.read_csv(R / "switchback_sd.csv")
+dr = pd.read_csv(R / "drift.csv")
+f = lambda x, d=2: f"{x:,.{d}f}"
+pc = lambda x, d=1: f"{100 * x:,.{d}f}%"
+g = lambda model, term, col="coef": float(cm[(cm.model == model) & (cm.term == term)][col].iloc[0])
+rho, rho_lo, rho_hi = g("dynamic", "L_lag"), g("dynamic", "L_lag", "lo"), g("dynamic", "L_lag", "hi")
+half_life = np.log(0.5) / np.log(rho)
+d25 = did[(did.year == "2024-25") & (did.term == "crz_credit")].iloc[0]
+d24 = did[(did.year == "2023-24 placebo") & (did.term == "crz_credit")].iloc[0]
+cmp = S["share_forecast"]["feb8_apr30"]
+w = fb.groupby("model").wape.mean()
+onset = {lam: ph[(ph.lam == lam) & (ph.price_swing > 0.05)].eta.min() for lam in sorted(ph.lam.unique())}
+p05 = pol[pol.eta == 0.5].set_index("policy")
+p10 = pol[pol.eta == 1.0].set_index("policy")
+Z = 1.959964 + 0.841621
+sd4 = float(sw[sw.block_hours == 4].sd_log.iloc[0])
+mde = lambda weeks: np.expm1(Z * sd4 * np.sqrt(4 / (weeks * 7 * 24 / 4)))
+```
+
+# Abstract {.unnumbered}
+
+```{python}
+#| output: asis
+print(f"A ride-hailing price acts on two populations that adapt with delay: riders, who choose between apps, "
+      f"and drivers, who choose where to work. We study both with the public trip records of New York City, "
+      f"{S['trips_total']/1e6:,.1f} million Uber and Lyft trips. On the rider side, Lyft's January 2025 credit "
+      f"of the congestion fee is a natural price shock. Nested choice models pick a logit dynamic with inertia: "
+      f"the daily persistence of Lyft's log-odds share is {f(rho)} (95% interval {f(rho_lo)} to {f(rho_hi)}), "
+      f"a half-life of {f(half_life, 1)} days, yet the dynamic model forecasts the post-credit share no better "
+      f"than a static one, and the credit's effect cannot be told apart from the same weeks a year earlier. "
+      f"On the driver side, a simulator calibrated on the data shows that a market-clearing surge amplifies "
+      f"drivers' reaction to earnings and makes prices cycle at imitation speeds where a fixed price is stable; "
+      f"smoothing delays the cycles. We also report a fare model, a week-ahead demand forecast, the size of a "
+      f"switchback experiment and a drift monitor.")
+```
+
+# Introduction
+
+Surge pricing is usually analysed in equilibrium [@castillo2017; @garg2019]. Equilibrium is where the
+market settles; pricing decisions are made on the way. Riders learn which app is cheaper and faster,
+drivers learn where the money is, and both learn with delay. Evolutionary game theory describes such
+populations: strategies spread in proportion to how well they pay relative to the alternatives
+[@sandholm2010; @fudenberg1998]. The logit dynamic with inertia, in which a population moves part of
+the way toward its logit best response each period [@hofbauer2002], nests two extremes that matter
+for pricing: static choice, where shares follow prices at once, and replicator-like drift, where a
+temporary advantage leaves a permanent mark. This paper asks which one the data support for riders,
+and what adaptive drivers imply for the choice of a pricing policy.
+
+# Data
+
+The NYC Taxi and Limousine Commission publishes every high-volume for-hire trip [@tlc]. We read
+fifteen monthly files (December 2023 to April 2024 and September 2024 to June 2025) with DuckDB, one
+pass per month, into zone-hour aggregates by app, a 0.5% trip sample and a monthly quality report.
+The report found that the time the car arrived is missing for 99.7% of Lyft trips until February
+2025 and filled from March 2025; the wait is therefore measured as pickup minus request.
+
+The congestion zone is identified from the data: pickup zones where at least 90% of trips paid the
+congestion fee after February 2025 (`{python} len(S['crz_zones'])` zones). From 5 to 31 January 2025 Lyft credited
+riders the fee on rides in the zone, each credit valid for a week; we treat 5 January to 7 February
+as the credit period.
+
+# Methods
+
+**Rider dynamics.** For each congestion-zone pickup zone and day, $L_{zt}$ is the log-odds of Lyft's
+share among Uber and Lyft trips. The static model is
+$L_{zt} = a_z + d_{\text{dow}} + b\,C_t + c\,\Delta\log p_{zt} + e\,\Delta w_{zt} + u_{zt}$, with $C_t$ the
+credit, $\Delta \log p$ the log ratio of Lyft's to Uber's fare per mile and $\Delta w$ the difference
+in waits. The dynamic model adds $\rho L_{z,t-1}$: $\rho = 0$ is static choice, $0<\rho<1$ a logit
+dynamic with inertia, $\rho = 1$ replicator-like drift. Both are estimated through 7 February 2025 and
+forecast 8 February to 30 April, the dynamic model recursively from its own predictions. They are
+compared by root mean squared error of the share and a one-sided Diebold-Mariano test. The credit is
+also measured by difference in differences against zones outside the congestion zone, with zone and
+date fixed effects, and the same calendar a year earlier as placebo.
+
+**Drivers and policy.** Six areas are calibrated on Lyft's weekday 18:00 profile from February to June
+2025. Demand for the platform is $q = Q\,m^{\varepsilon}\,s/s_0$ with $\varepsilon=-0.4$ [@cohen2016];
+the wait is $w = w_0\,[(q/Q)(x_0/x)]^{\alpha}$ with $\alpha$ estimated within zone and hour of week;
+the rider share follows the dynamic choice model; drivers move by an exponential replicator on
+earnings relative to what each area usually pays, with imitation speed $\eta$. Policies: a fixed price,
+the market-clearing multiplier that restores the usual wait given today's drivers, and that
+multiplier smoothed by a factor $\lambda$. Under the clearing policy a driver's relative earnings equal
+the multiplier, which moves as $(x/x_0)^{1/\varepsilon}$: the policy multiplies drivers' reaction by
+$1/|\varepsilon| = 2.5$.
+
+**Forecast, fares, experiments, drift.** Trips by zone and hour are forecast a week ahead with
+XGBoost on calendar and lags of one to four weeks, by rolling origin. A switchback planner uses the
+variability of log block margin. Drift is the population stability index of trip features each month.
+
+# Results
+
+```{python}
+#| output: asis
+print(f"**Riders adapt with inertia, but fast.** The daily persistence is {f(rho)} (95% interval {f(rho_lo)} "
+      f"to {f(rho_hi)}), a half-life of {f(half_life, 1)} days. A higher relative price per mile and a longer "
+      f"relative wait lower Lyft's share, by {f(-g('static','dlogp'))} in log-odds per unit of log price "
+      f"ratio and {f(-g('static','dwait'))} per minute. Forecasting 8 February to 30 April 2025, the share error "
+      f"is {f(100 * cmp['rmse_dynamic'])} percentage points for the dynamic model and {f(100 * cmp['rmse_static'])} for the static one "
+      f"(Diebold-Mariano p = {f(cmp['dm_p_one_sided'])}): at horizons of weeks the inertia does not help.\n\n")
+print(f"**The credit left no mark that the calendar cannot explain.** Inside the zone, Lyft's log-odds share rose "
+      f"{f(d25.coef, 3)} during the credit (interval {f(d25.lo, 3)} to {f(d25.hi, 3)}); the same weeks of the "
+      f"previous year, with no credit, show {f(d24.coef, 3)} (interval {f(d24.lo, 3)} to {f(d24.hi, 3)}).\n\n")
+print(f"**A clearing surge invites cycles.** With slow drivers ($\\eta$ = 0.5) every policy settles, and the "
+      f"clearing surge earns {pc(p05.loc['clearing','margin']/p05.loc['fixed','margin']-1)} more margin than a fixed "
+      f"price. Prices start to cycle at $\\eta$ = {onset[1.0]:g} under the clearing surge, at {onset[0.1]:g} when it is "
+      f"smoothed to a tenth of the gap per day, and between 1 and 2 under a fixed price. At $\\eta$ = 1 the cycling "
+      f"clearing surge earns more margin than the smoothed one (US$ {f(p10.loc['clearing','margin'],0)} against "
+      f"US$ {f(p10.loc['smoothed','margin'],0)} per evening peak hour across the six areas), because short-run demand is inelastic, while the mean "
+      f"wait rises from {f(p10.loc['smoothed','wait'])} to {f(p10.loc['clearing','wait'])} minutes.\n\n")
+print(f"**Forecast, experiment and drift.** A week ahead, XGBoost's error (WAPE) averages {pc(w['XGBoost'])}, "
+      f"against {pc(w['Mean of last 4 weeks'])} for the mean of the last four weeks and {pc(w['Same hour last week'])} "
+      f"for the same hour last week. With four-hour switchback blocks, two weeks detect a {pc(mde(2),0)} change in "
+      f"margin, eight weeks {pc(mde(8),0)} [@bojinov2023]. Every feature's monthly stability index stays below "
+      f"{f(dr.psi.max())}.\n")
+```
+
+# Discussion
+
+The rider side looks closer to static choice than the evolutionary framing suggests: inertia is real
+but short, and a five-week credit did not shift shares for good. The driver side is where dynamics
+bite. A policy that clears the market every period turns drivers' earnings into a function of the
+multiplier itself and makes the system oscillate once drivers imitate quickly; smoothing trades a
+little margin for stability. For a platform the practical rules are to smooth the multiplier, to judge
+policies on waits and supply stability as well as margin, and to test them with switchbacks long
+enough for drivers to settle.
+
+# Limits
+
+Prices are chosen by the platforms, so the price coefficients of the choice model are associations.
+Credits and promotions are not in the fares. The daily persistence may mix habit with persistent
+local shocks. The simulator borrows the demand elasticity, assumes the observed split of drivers is a
+rest point and cannot identify the imitation speed. In 2025 Uber began passing some requests to yellow
+cabs, which leave this source.
+
+# Code and data {.unnumbered}
+
+Code, tests and every table: <https://github.com/rhozon/mobility-dynamic-pricing>. Data: NYC TLC trip
+records, downloaded by `python -m mdp.cli download`.
+
+# References {.unnumbered}
